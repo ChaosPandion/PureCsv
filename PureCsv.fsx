@@ -38,9 +38,7 @@ module private Parser =
     let matchStringAtIndex (text:string) (index:int) (test:string) = text.IndexOf(test, index) = index
                                                        
     let getChar state = state.text.[state.index]
-  
-
-
+             
     let parseChar c = 
         fun state ->
             if getChar state = c 
@@ -77,37 +75,114 @@ module private Parser =
         match p1 state with
         | Success (state, value) as result -> result
         | Failure (state, message) -> p2 state
-        
 
-
+    let optional p state = match p state with
+                           | Success (state, value) -> Success (state, Some value) 
+                           | Failure (state, message) -> Success (state, None)  
+          
     let parseCRLF = parse {
         let! s = parseString "\r\n"
         return s
+    }  
+
+    let TEXTDATA = [0x2D..0x7E] |> List.map char |> List.append ['\u0020'; '\u0020'] |> List.append <| ([0x23..0x2B] |> List.map char)
+    let parseTEXTDATA = parseOneOf TEXTDATA 
+
+    let parse2DQUOTE = parse {
+        do! skipChar '\"'  
+        do! skipChar '\"'
+        return '\"'
     }
 
-    let parseEscapedBody = parse {
-        return ""                
+    let parseEscapedBodyChar = parse {
+        let! c = parseOneOf ",\r\n" <|> parse2DQUOTE <|> parseTEXTDATA
+        return c               
+    }
+
+    let rec parseEscapedBody () = parse {
+        let! head = parseEscapedBodyChar
+        let! tail = parseEscapedBody ()
+        return head::tail              
     }
 
     let parseEscaped = parse {
         do! skipChar '\"'
-        let! body = parseEscapedBody
+        let! body = parseEscapedBody ()
         do! skipChar '\"'
         return body
+    }  
+
+    let rec parseNonEscaped () = parse {
+        let! head = parseTEXTDATA
+        let! tail = parseNonEscaped ()
+        return head::tail              
     }
 
+    let parseField = parse {
+        let! r = parseEscaped <|> parseNonEscaped ()
+        return r
+    }         
+
+    let parseName = parse {
+        let! r = parseField
+        return r
+    }
                                       
-    let parseRecord state = parse {
-        return Array.zeroCreate 1
+    let rec parseRecordTrail () = parse {
+        do! skipChar ','
+        let! head = parseField
+        let! tail = parseRecordTrail ()
+        return head::tail
     }
  
-    let parseHeader state = parse {
-        return Array.zeroCreate 1
+    let parseRecord = parse {
+        let! head = parseField
+        let! tail = parseRecordTrail () 
+        return head::tail
+    }   
+
+    let rec parseRecordsTrail () = parse { 
+        let! _ = optional parseCRLF 
+        let! head = parseRecord
+        let! tail = parseRecordsTrail () 
+        return head::tail
+    }
+ 
+    let parseRecords = parse {
+        let! head = parseRecord
+        let! tail = parseRecordsTrail () 
+        return head::tail
     }
 
-    let parseFile state = parse {
-        return CsvFile ([||], [||]) 
+    let rec parseHeaderTrail () = parse {
+        do! skipChar ','
+        let! head = parseName
+        let! tail = parseHeaderTrail ()
+        return head::tail
     }
-          
+ 
+    let parseHeader = parse {
+        let! head = parseName
+        let! tail = parseHeaderTrail () 
+        return head::tail
+    }
 
-let parse (text:string) : CsvFile = CsvFile ([||], [||])
+    let parseFile = parse {
+        let! header = optional parseHeader
+        printfn "parsed header"
+        let! _ = optional parseCRLF 
+        let! records = parseRecords
+        let header = match header with
+                     | Some hs -> hs |> List.map (fun cs -> String(Array.ofList cs)) |> Array.ofList
+                     | None -> [| |] 
+        let records = records |> List.map (fun cs -> cs |> List.map (fun cs -> String(Array.ofList cs)) |> Array.ofList) |> Array.ofList
+        return CsvFile (header, records) 
+    }
+       
+open Parser   
+
+let parse (text:string) : CsvFile =
+    let state = { text = text; index = 0 }
+    match parseFile state with
+    | Success (state, value) -> value
+    | Failure (state, message) -> failwith message
