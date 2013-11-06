@@ -1,3 +1,5 @@
+module PureCsv
+
 open System
 
 type CsvFile (headers:string[], records:string[][]) =
@@ -30,8 +32,9 @@ module private Parser =
             fun state ->
                 match parser state with
                 | Success (state, value) -> getNextParser value state
-                | Failure (state, message) -> Failure (state, message)
+                | Failure (_, message) -> Failure (state, message)
         member x.Return (value) state = Success (state, value)  
+        member x.Delay func state = (func ()) state
 
     let parse = ParseBuilder ()               
 
@@ -41,35 +44,38 @@ module private Parser =
              
     let parseChar c = 
         fun state ->
-            if getChar state = c 
+            if state.index < state.text.Length && getChar state = c 
             then Success ({ state with index = state.index + 1 }, c) 
             else Failure (state, "")  
 
     let parseString cs =
         fun state ->
-            if matchStringAtIndex state.text state.index cs
+            if state.index < state.text.Length && matchStringAtIndex state.text state.index cs
             then Success ({ state with index = state.index + cs.Length }, cs) 
             else Failure (state, "")   
 
     let skipChar c = 
         fun state ->
-            if getChar state = c 
+            if state.index < state.text.Length && getChar state = c 
             then Success ({ state with index = state.index + 1 }, ()) 
             else Failure (state, "") 
 
     let skipString cs =
         fun state ->
-            if matchStringAtIndex state.text state.index cs
+            if state.index < state.text.Length && matchStringAtIndex state.text state.index cs
             then Success ({ state with index = state.index + cs.Length }, ()) 
             else Failure (state, "")
          
     let parseOneOf cs = 
         let set = Set.ofSeq cs
         fun state -> 
-            let c = getChar state
-            if set.Contains c
-            then Success ({ state with index = state.index + 1 }, c) 
-            else Failure (state, "")
+            if state.index >= state.text.Length 
+            then Failure (state, "")
+            else 
+                let c = getChar state
+                if set.Contains c
+                then Success ({ state with index = state.index + 1 }, c) 
+                else Failure (state, "")
 
     let (<|>) p1 p2 state =
         match p1 state with
@@ -78,7 +84,7 @@ module private Parser =
 
     let optional p state = match p state with
                            | Success (state, value) -> Success (state, Some value) 
-                           | Failure (state, message) -> Success (state, None)  
+                           | Failure (_, message) -> Success (state, None)  
           
     let parseCRLF = parse {
         let! s = parseString "\r\n"
@@ -101,25 +107,25 @@ module private Parser =
 
     let rec parseEscapedBody () = parse {
         let! head = parseEscapedBodyChar
-        let! tail = parseEscapedBody ()
+        let! tail = parseEscapedBody () <|> parse { return [] }
         return head::tail              
     }
 
     let parseEscaped = parse {
         do! skipChar '\"'
-        let! body = parseEscapedBody ()
+        let! body = parseEscapedBody () <|> parse { return [] }
         do! skipChar '\"'
         return body
     }  
 
     let rec parseNonEscaped () = parse {
         let! head = parseTEXTDATA
-        let! tail = parseNonEscaped ()
+        let! tail = parseNonEscaped () <|> parse { return [] }
         return head::tail              
     }
 
     let parseField = parse {
-        let! r = parseEscaped <|> parseNonEscaped ()
+        let! r = parseEscaped <|> parseNonEscaped () <|> parse { return [] }
         return r
     }         
 
@@ -131,39 +137,39 @@ module private Parser =
     let rec parseRecordTrail () = parse {
         do! skipChar ','
         let! head = parseField
-        let! tail = parseRecordTrail ()
+        let! tail = parseRecordTrail () <|> parse { return [] }
         return head::tail
     }
  
     let parseRecord = parse {
         let! head = parseField
-        let! tail = parseRecordTrail () 
+        let! tail = parseRecordTrail () <|> parse { return [] } 
         return head::tail
     }   
 
     let rec parseRecordsTrail () = parse { 
-        let! _ = optional parseCRLF 
+        let! _ = parseCRLF 
         let! head = parseRecord
-        let! tail = parseRecordsTrail () 
+        let! tail = parseRecordsTrail () <|> parse { return [] } 
         return head::tail
     }
  
     let parseRecords = parse {
         let! head = parseRecord
-        let! tail = parseRecordsTrail () 
+        let! tail = parseRecordsTrail () <|> parse { return [] } 
         return head::tail
     }
 
     let rec parseHeaderTrail () = parse {
         do! skipChar ','
         let! head = parseName
-        let! tail = parseHeaderTrail ()
+        let! tail = parseHeaderTrail () <|> parse { return [] }
         return head::tail
     }
  
     let parseHeader = parse {
         let! head = parseName
-        let! tail = parseHeaderTrail () 
+        let! tail = parseHeaderTrail () <|> parse { return [] } 
         return head::tail
     }
 
