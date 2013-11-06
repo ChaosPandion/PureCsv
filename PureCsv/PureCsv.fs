@@ -85,20 +85,23 @@ module private Parser =
                 then Success ({ state with index = state.index + 1 }, c) 
                 else Failure (state, "")
 
+    /// This is a 'choice' combinator.
     let (<|>) p1 p2 state =
         match p1 state with
         | Success (state, value) as result -> result
         | Failure (state, message) -> p2 state
 
-    let optional p state = match p state with
-                           | Success (state, value) -> Success (state, Some value) 
-                           | Failure (_, message) -> Success (state, None)  
+    let optional p state = 
+        match p state with
+        | Success (state, value) -> Success (state, Some value) 
+        | Failure (_, message) -> Success (state, None)  
           
     let parseCRLF = parse {
         let! s = parseString "\r\n"
         return s
     }  
 
+    /// TEXTDATA =  %x20-21 / %x23-2B / %x2D-7E
     let TEXTDATA = 
         [0x2D..0x7E] 
         |> List.map char 
@@ -200,7 +203,9 @@ module private Parser =
        
 open Parser   
 
-let parse (text:string) : CsvFile =
+let parse text =
+    if text = null then
+        nullArg "text"
     let state = { text = text; index = 0 }
     match parseFile state with
     | Success (state, value) -> value
