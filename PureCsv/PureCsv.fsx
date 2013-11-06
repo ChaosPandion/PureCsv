@@ -169,7 +169,6 @@ module private Parser =
 
     let parseFile = parse {
         let! header = optional parseHeader
-        printfn "parsed header"
         let! _ = optional parseCRLF 
         let! records = parseRecords
         let header = match header with
