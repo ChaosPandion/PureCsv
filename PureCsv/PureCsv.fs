@@ -15,8 +15,7 @@ type CsvFile (headers:string[], records:string[][]) =
         member x.GetRecord (row, column) = Array.get records row |> Array.get <| column
 
 
-module private Parser =
-                               
+module private Parser =                                
     
     type State = {
         text : string
@@ -27,14 +26,23 @@ module private Parser =
         Success of State * 't 
         | Failure of State * string
 
+    let bind parser getNextParser state = 
+        match parser state with
+        | Success (state, value) -> 
+            getNextParser value state
+        | Failure (_, message) -> 
+            Failure (state, message)
+
+    let _return value state = 
+        Success (state, value)  
+
     type ParseBuilder () = 
-        member x.Bind (parser, getNextParser) =
-            fun state ->
-                match parser state with
-                | Success (state, value) -> getNextParser value state
-                | Failure (_, message) -> Failure (state, message)
-        member x.Return (value) state = Success (state, value)  
-        member x.Delay func state = (func ()) state
+        member x.Bind (parser, getNextParser) state = 
+            bind parser getNextParser state
+        member x.Return value state = 
+            _return value state
+        member x.Delay func state = 
+            func () state
 
     let parse = ParseBuilder ()               
 
@@ -91,7 +99,13 @@ module private Parser =
         return s
     }  
 
-    let TEXTDATA = [0x2D..0x7E] |> List.map char |> List.append ['\u0020'; '\u0020'] |> List.append <| ([0x23..0x2B] |> List.map char)
+    let TEXTDATA = 
+        [0x2D..0x7E] 
+        |> List.map char 
+        |> List.append ['\u0020'; '\u0020'] 
+        |> List.append 
+        <| ([0x23..0x2B] |> List.map char)
+
     let parseTEXTDATA = parseOneOf TEXTDATA 
 
     let parse2DQUOTE = parse {
@@ -107,25 +121,25 @@ module private Parser =
 
     let rec parseEscapedBody () = parse {
         let! head = parseEscapedBodyChar
-        let! tail = parseEscapedBody () <|> parse { return [] }
+        let! tail = parseEscapedBody () <|> _return []
         return head::tail              
     }
 
     let parseEscaped = parse {
         do! skipChar '\"'
-        let! body = parseEscapedBody () <|> parse { return [] }
+        let! body = parseEscapedBody () <|> _return []
         do! skipChar '\"'
         return body
     }  
 
     let rec parseNonEscaped () = parse {
         let! head = parseTEXTDATA
-        let! tail = parseNonEscaped () <|> parse { return [] }
+        let! tail = parseNonEscaped () <|> _return []
         return head::tail              
     }
 
     let parseField = parse {
-        let! r = parseEscaped <|> parseNonEscaped () <|> parse { return [] }
+        let! r = parseEscaped <|> parseNonEscaped () <|> _return []
         return r
     }         
 
@@ -137,39 +151,39 @@ module private Parser =
     let rec parseRecordTrail () = parse {
         do! skipChar ','
         let! head = parseField
-        let! tail = parseRecordTrail () <|> parse { return [] }
+        let! tail = parseRecordTrail () <|> _return []
         return head::tail
     }
  
     let parseRecord = parse {
         let! head = parseField
-        let! tail = parseRecordTrail () <|> parse { return [] } 
+        let! tail = parseRecordTrail () <|> _return [] 
         return head::tail
     }   
 
     let rec parseRecordsTrail () = parse { 
         let! _ = parseCRLF 
         let! head = parseRecord
-        let! tail = parseRecordsTrail () <|> parse { return [] } 
+        let! tail = parseRecordsTrail () <|> _return [] 
         return head::tail
     }
  
     let parseRecords = parse {
         let! head = parseRecord
-        let! tail = parseRecordsTrail () <|> parse { return [] } 
+        let! tail = parseRecordsTrail () <|> _return [] 
         return head::tail
     }
 
     let rec parseHeaderTrail () = parse {
         do! skipChar ','
         let! head = parseName
-        let! tail = parseHeaderTrail () <|> parse { return [] }
+        let! tail = parseHeaderTrail () <|> _return []
         return head::tail
     }
  
     let parseHeader = parse {
         let! head = parseName
-        let! tail = parseHeaderTrail () <|> parse { return [] } 
+        let! tail = parseHeaderTrail () <|> _return []
         return head::tail
     }
 
@@ -177,10 +191,10 @@ module private Parser =
         let! header = optional parseHeader
         let! _ = optional parseCRLF 
         let! records = parseRecords
-        let header = match header with
-                     | Some hs -> hs |> List.map (fun cs -> String(Array.ofList cs)) |> Array.ofList
-                     | None -> [| |] 
-        let records = records |> List.map (fun cs -> cs |> List.map (fun cs -> String(Array.ofList cs)) |> Array.ofList) |> Array.ofList
+        let listToString cs = String(Array.ofList cs)
+        let listToStringArray cs = cs |> List.map listToString |> Array.ofList
+        let header = match header with | Some hs -> listToStringArray hs | None -> [| |] 
+        let records = records |> List.map listToStringArray |> Array.ofList
         return CsvFile (header, records) 
     }
        
@@ -191,3 +205,4 @@ let parse (text:string) : CsvFile =
     match parseFile state with
     | Success (state, value) -> value
     | Failure (state, message) -> failwith message
+     
